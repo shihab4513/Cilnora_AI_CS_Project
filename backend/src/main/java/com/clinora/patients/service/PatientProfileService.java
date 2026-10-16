@@ -1,0 +1,480 @@
+package com.clinora.patients.service;
+
+import com.clinora.audit.AuthAuditAction;
+import com.clinora.audit.AuthAuditOutcome;
+import com.clinora.audit.AuthAuditService;
+import com.clinora.patients.api.PatientApiException;
+import com.clinora.patients.domain.BloodGroup;
+import com.clinora.patients.domain.PatientAllergy;
+import com.clinora.patients.domain.PatientChronicCondition;
+import com.clinora.patients.domain.PatientGender;
+import com.clinora.patients.domain.PatientMedication;
+import com.clinora.patients.domain.PatientProfile;
+import com.clinora.patients.domain.PatientReportSubjectType;
+import com.clinora.patients.repository.PatientAllergyRepository;
+import com.clinora.patients.repository.PatientChronicConditionRepository;
+import com.clinora.patients.repository.PatientMedicationRepository;
+import com.clinora.patients.repository.PatientMedicalReportRepository;
+import com.clinora.patients.repository.PatientProfileRepository;
+import com.clinora.users.domain.UserAccount;
+import com.clinora.users.domain.UserRole;
+import com.clinora.users.repository.UserAccountRepository;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class PatientProfileService {
+
+    private final UserAccountRepository users;
+    private final PatientProfileRepository profiles;
+    private final PatientAllergyRepository allergies;
+    private final PatientChronicConditionRepository conditions;
+    private final PatientMedicationRepository medications;
+    private final PatientMedicalReportRepository reports;
+    private final AuthAuditService audit;
+    private final Clock clock;
+
+    public PatientProfileService(
+        UserAccountRepository users,
+        PatientProfileRepository profiles,
+        PatientAllergyRepository allergies,
+        PatientChronicConditionRepository conditions,
+        PatientMedicationRepository medications,
+        PatientMedicalReportRepository reports,
+        AuthAuditService audit,
+        Clock clock
+    ) {
+        this.users = users;
+        this.profiles = profiles;
+        this.allergies = allergies;
+        this.conditions = conditions;
+        this.medications = medications;
+        this.reports = reports;
+        this.audit = audit;
+        this.clock = clock;
+    }
+
+    @Transactional(readOnly = true)
+    public PatientProfileView profile(UUID userId) {
+        UserAccount user = requireActivePatient(userId);
+        return profiles.findByUserId(userId)
+            .map(profile -> view(user, profile))
+            .orElseGet(() -> PatientProfileView.empty(user));
+    }
+
+    @Transactional(readOnly = true)
+    public PatientDashboardView dashboard(UUID userId) {
+        PatientProfileView profile = profile(userId);
+        long activeReportCount = reports.countByPatientUserIdAndSubjectTypeAndArchivedAtIsNull(userId, PatientReportSubjectType.SELF);
+        DashboardReportView latestReport = reports
+            .findFirstByPatientUserIdAndSubjectTypeAndArchivedAtIsNullOrderByCreatedAtDesc(userId, PatientReportSubjectType.SELF)
+            .map(report -> new DashboardReportView(
+                report.getId(),
+                PatientReportDisplayName.resolve(
+                    report.getReportName(),
+                    report.getOriginalFilename(),
+                    report.getReportType().name(),
+                    report.getReportDate(),
+                    report.getProviderLaboratory()
+                ),
+                report.getReportType(),
+                report.getReportDate(),
+                report.getProviderLaboratory(),
+                report.getCreatedAt()
+            ))
+            .orElse(null);
+        return new PatientDashboardView(
+            profile.firstName(),
+            profile.lastName(),
+            profile.profileCreated(),
+            profile.completenessPercent(),
+            profile.missingProfileFields(),
+            profile.bloodGroup(),
+            profile.dateOfBirth(),
+            profile.heightCm(),
+            profile.weightKg(),
+            bmi(profile.heightCm(), profile.weightKg()),
+            profile.allergies().size(),
+            profile.chronicConditions().size(),
+            profile.currentMedications().size(),
+            profile.emergencyContact().configured(),
+            profile.updatedAt(),
+            activeReportCount,
+            latestReport
+        );
+    }
+
+    @Transactional
+    public PatientProfileView update(UUID userId, UpdatePatientProfileCommand command, String ipAddress, String userAgent) {
+        UserAccount user = requireActivePatient(userId);
+        validateDateOfBirth(command.dateOfBirth());
+
+        Instant now = clock.instant();
+        if (user.getRole() == com.clinora.users.domain.UserRole.RESEARCHER && ((command.firstName() != null && !command.firstName().isBlank())
+            || (command.lastName() != null && !command.lastName().isBlank()))) {
+            user.updateName(command.firstName(), command.lastName(), now);
+            users.save(user);
+        }
+
+        PatientProfile profile = profiles.findByUserId(userId).orElse(null);
+        boolean created = profile == null;
+        if (profile == null) {
+            profile = profiles.save(new PatientProfile(userId, now));
+        }
+
+        profile.update(
+            command.dateOfBirth(),
+            command.gender(),
+            command.bloodGroup(),
+            command.phone(),
+            command.address(),
+            command.heightCm(),
+            command.weightKg(),
+            command.familyMedicalHistory(),
+            command.lifestyleInformation(),
+            command.emergencyContactName(),
+            command.emergencyContactPhone(),
+            command.emergencyContactRelationship(),
+            now
+        );
+        profiles.save(profile);
+
+        reconcileClinicalLists(
+            profile.getId(),
+            cleanItems(command.allergies()),
+            cleanItems(command.chronicConditions()),
+            cleanItems(command.currentMedications()),
+            now
+        );
+
+        audit.record(
+            userId,
+            created ? AuthAuditAction.PATIENT_PROFILE_CREATED : AuthAuditAction.PATIENT_PROFILE_UPDATED,
+            AuthAuditOutcome.SUCCESS,
+            ipAddress,
+            userAgent,
+            profile.getId().toString(),
+            null
+        );
+
+        return view(user, profile);
+    }
+
+    private void reconcileClinicalLists(
+        UUID profileId,
+        List<String> allergyNames,
+        List<String> conditionNames,
+        List<String> medicationNames,
+        Instant now
+    ) {
+        Map<String, String> desiredAllergies = normalizedItems(allergyNames);
+        List<PatientAllergy> existingAllergies = allergies.findAllByPatientProfileIdOrderByNameAsc(profileId);
+        List<PatientAllergy> removedAllergies = existingAllergies.stream()
+            .filter(item -> !desiredAllergies.containsKey(normalizedKey(item.getName())))
+            .toList();
+        if (!removedAllergies.isEmpty()) allergies.deleteAll(removedAllergies);
+        Map<String, PatientAllergy> allergiesByName = new LinkedHashMap<>();
+        existingAllergies.forEach(item -> allergiesByName.put(normalizedKey(item.getName()), item));
+        List<PatientAllergy> addedAllergies = desiredAllergies.entrySet().stream()
+            .filter(item -> !allergiesByName.containsKey(item.getKey()))
+            .map(item -> new PatientAllergy(profileId, item.getValue(), now))
+            .toList();
+        if (!addedAllergies.isEmpty()) allergies.saveAll(addedAllergies);
+
+        Map<String, String> desiredConditions = normalizedItems(conditionNames);
+        List<PatientChronicCondition> existingConditions = conditions.findAllByPatientProfileIdOrderByNameAsc(profileId);
+        List<PatientChronicCondition> removedConditions = existingConditions.stream()
+            .filter(item -> !desiredConditions.containsKey(normalizedKey(item.getName())))
+            .toList();
+        if (!removedConditions.isEmpty()) conditions.deleteAll(removedConditions);
+        Map<String, PatientChronicCondition> conditionsByName = new LinkedHashMap<>();
+        existingConditions.forEach(item -> conditionsByName.put(normalizedKey(item.getName()), item));
+        List<PatientChronicCondition> addedConditions = desiredConditions.entrySet().stream()
+            .filter(item -> !conditionsByName.containsKey(item.getKey()))
+            .map(item -> new PatientChronicCondition(profileId, item.getValue(), now))
+            .toList();
+        if (!addedConditions.isEmpty()) conditions.saveAll(addedConditions);
+
+        Map<String, String> desiredMedications = normalizedItems(medicationNames);
+        List<PatientMedication> existingMedications = medications.findAllByPatientProfileIdOrderByNameAsc(profileId);
+        List<PatientMedication> removedMedications = existingMedications.stream()
+            .filter(item -> !desiredMedications.containsKey(normalizedKey(item.getName())))
+            .toList();
+        if (!removedMedications.isEmpty()) medications.deleteAll(removedMedications);
+        Map<String, PatientMedication> medicationsByName = new LinkedHashMap<>();
+        existingMedications.forEach(item -> medicationsByName.put(normalizedKey(item.getName()), item));
+        List<PatientMedication> addedMedications = desiredMedications.entrySet().stream()
+            .filter(item -> !medicationsByName.containsKey(item.getKey()))
+            .map(item -> new PatientMedication(profileId, item.getValue(), now))
+            .toList();
+        if (!addedMedications.isEmpty()) medications.saveAll(addedMedications);
+    }
+
+    private Map<String, String> normalizedItems(List<String> names) {
+        Map<String, String> normalized = new LinkedHashMap<>();
+        names.forEach(name -> normalized.put(normalizedKey(name), name));
+        return normalized;
+    }
+
+    private String normalizedKey(String value) {
+        return value.toLowerCase(Locale.ROOT);
+    }
+
+    private PatientProfileView view(UserAccount user, PatientProfile profile) {
+        List<String> allergyNames = allergies.findAllByPatientProfileIdOrderByNameAsc(profile.getId()).stream()
+            .map(PatientAllergy::getName)
+            .toList();
+        List<String> conditionNames = conditions.findAllByPatientProfileIdOrderByNameAsc(profile.getId()).stream()
+            .map(PatientChronicCondition::getName)
+            .toList();
+        List<String> medicationNames = medications.findAllByPatientProfileIdOrderByNameAsc(profile.getId()).stream()
+            .map(PatientMedication::getName)
+            .toList();
+        ProfileReadiness readiness = readiness(profile);
+
+        return new PatientProfileView(
+            profile.getId(),
+            true,
+            user.getFirstName(),
+            user.getLastName(),
+            user.getEmail(),
+            profile.getDateOfBirth(),
+            profile.getGender(),
+            profile.getBloodGroup(),
+            profile.getPhone(),
+            profile.getAddress(),
+            profile.getHeightCm(),
+            profile.getWeightKg(),
+            profile.getFamilyMedicalHistory(),
+            profile.getLifestyleInformation(),
+            new EmergencyContactView(
+                profile.getEmergencyContactName(),
+                profile.getEmergencyContactPhone(),
+                profile.getEmergencyContactRelationship(),
+                hasText(profile.getEmergencyContactName()) && hasText(profile.getEmergencyContactPhone())
+            ),
+            allergyNames,
+            conditionNames,
+            medicationNames,
+            readiness.percent(),
+            readiness.missingFields(),
+            profile.getUpdatedAt()
+        );
+    }
+
+    private UserAccount requireActivePatient(UUID userId) {
+        UserAccount user = users.findById(userId).orElseThrow(() -> new PatientApiException(
+            HttpStatus.UNAUTHORIZED,
+            "PATIENT_ACCOUNT_NOT_FOUND",
+            "The authenticated Patient account is unavailable."
+        ));
+        if (user.getRole() != UserRole.PATIENT && user.getRole() != UserRole.RESEARCHER) {
+            throw new PatientApiException(HttpStatus.FORBIDDEN, "PATIENT_ROLE_REQUIRED", "Patient or Researcher access is required.");
+        }
+        if (!user.isLoginAllowed()) {
+            throw new PatientApiException(
+                HttpStatus.FORBIDDEN,
+                "PATIENT_ACCOUNT_INACTIVE",
+                "This account is not currently active."
+            );
+        }
+        return user;
+    }
+
+    private void validateDateOfBirth(LocalDate dateOfBirth) {
+        if (dateOfBirth != null && dateOfBirth.isAfter(LocalDate.now(clock))) {
+            throw new PatientApiException(
+                HttpStatus.BAD_REQUEST,
+                "INVALID_DATE_OF_BIRTH",
+                "Date of birth cannot be in the future."
+            );
+        }
+    }
+
+    private List<String> cleanItems(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        Map<String, String> distinct = new LinkedHashMap<>();
+        for (String value : values) {
+            if (value == null) {
+                continue;
+            }
+            String trimmed = value.trim().replaceAll("\\s+", " ");
+            if (!trimmed.isEmpty()) {
+                distinct.putIfAbsent(trimmed.toLowerCase(Locale.ROOT), trimmed);
+            }
+        }
+        return List.copyOf(distinct.values());
+    }
+
+    private ProfileReadiness readiness(PatientProfile profile) {
+        List<String> missing = new ArrayList<>();
+        if (profile.getDateOfBirth() == null) missing.add("Date of birth");
+        if (profile.getGender() == null) missing.add("Gender");
+        if (profile.getBloodGroup() == null) missing.add("Blood group");
+        if (!hasText(profile.getPhone())) missing.add("Phone");
+        if (!hasText(profile.getAddress())) missing.add("Address");
+        if (profile.getHeightCm() == null) missing.add("Height");
+        if (profile.getWeightKg() == null) missing.add("Weight");
+        if (!hasText(profile.getEmergencyContactName()) || !hasText(profile.getEmergencyContactPhone())) {
+            missing.add("Emergency contact");
+        }
+        int total = 8;
+        int completed = total - missing.size();
+        return new ProfileReadiness((int) Math.round((completed * 100.0) / total), List.copyOf(missing));
+    }
+
+    private BigDecimal bmi(BigDecimal heightCm, BigDecimal weightKg) {
+        if (heightCm == null || weightKg == null || heightCm.signum() <= 0) {
+            return null;
+        }
+        BigDecimal meters = heightCm.divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP);
+        return weightKg.divide(meters.multiply(meters), 1, RoundingMode.HALF_UP);
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private record ProfileReadiness(int percent, List<String> missingFields) {
+    }
+
+    public record UpdatePatientProfileCommand(
+        String firstName,
+        String lastName,
+        LocalDate dateOfBirth,
+        PatientGender gender,
+        BloodGroup bloodGroup,
+        String phone,
+        String address,
+        BigDecimal heightCm,
+        BigDecimal weightKg,
+        String familyMedicalHistory,
+        String lifestyleInformation,
+        String emergencyContactName,
+        String emergencyContactPhone,
+        String emergencyContactRelationship,
+        List<String> allergies,
+        List<String> chronicConditions,
+        List<String> currentMedications
+    ) {
+        public UpdatePatientProfileCommand(
+            LocalDate dateOfBirth,
+            PatientGender gender,
+            BloodGroup bloodGroup,
+            String phone,
+            String address,
+            BigDecimal heightCm,
+            BigDecimal weightKg,
+            String familyMedicalHistory,
+            String lifestyleInformation,
+            String emergencyContactName,
+            String emergencyContactPhone,
+            String emergencyContactRelationship,
+            List<String> allergies,
+            List<String> chronicConditions,
+            List<String> currentMedications
+        ) {
+            this(null, null, dateOfBirth, gender, bloodGroup, phone, address, heightCm, weightKg,
+                familyMedicalHistory, lifestyleInformation, emergencyContactName, emergencyContactPhone,
+                emergencyContactRelationship, allergies, chronicConditions, currentMedications);
+        }
+    }
+
+    public record EmergencyContactView(String name, String phone, String relationship, boolean configured) {
+    }
+
+    public record PatientProfileView(
+        UUID id,
+        boolean profileCreated,
+        String firstName,
+        String lastName,
+        String email,
+        LocalDate dateOfBirth,
+        PatientGender gender,
+        BloodGroup bloodGroup,
+        String phone,
+        String address,
+        BigDecimal heightCm,
+        BigDecimal weightKg,
+        String familyMedicalHistory,
+        String lifestyleInformation,
+        EmergencyContactView emergencyContact,
+        List<String> allergies,
+        List<String> chronicConditions,
+        List<String> currentMedications,
+        int completenessPercent,
+        List<String> missingProfileFields,
+        Instant updatedAt
+    ) {
+        static PatientProfileView empty(UserAccount user) {
+            return new PatientProfileView(
+                null,
+                false,
+                user.getFirstName(),
+                user.getLastName(),
+                user.getEmail(),
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                new EmergencyContactView(null, null, null, false),
+                List.of(),
+                List.of(),
+                List.of(),
+                0,
+                List.of("Date of birth", "Gender", "Blood group", "Phone", "Address", "Height", "Weight", "Emergency contact"),
+                null
+            );
+        }
+    }
+
+    public record PatientDashboardView(
+        String firstName,
+        String lastName,
+        boolean profileCreated,
+        int profileCompletenessPercent,
+        List<String> missingProfileFields,
+        BloodGroup bloodGroup,
+        LocalDate dateOfBirth,
+        BigDecimal heightCm,
+        BigDecimal weightKg,
+        BigDecimal bmi,
+        int allergyCount,
+        int chronicConditionCount,
+        int medicationCount,
+        boolean emergencyContactConfigured,
+        Instant profileUpdatedAt,
+        long activeReportCount,
+        DashboardReportView latestReport
+    ) {
+    }
+
+    public record DashboardReportView(
+        UUID id,
+        String reportName,
+        com.clinora.patients.domain.PatientReportType reportType,
+        LocalDate reportDate,
+        String providerLaboratory,
+        Instant uploadedAt
+    ) {
+    }
+}

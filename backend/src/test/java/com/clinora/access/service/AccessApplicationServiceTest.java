@@ -1,0 +1,407 @@
+package com.clinora.access.service;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.clinora.access.api.AccessApplicationException;
+import com.clinora.access.domain.AccessApplication;
+import com.clinora.access.domain.ApplicationStatus;
+import com.clinora.access.domain.ApplicationToken;
+import com.clinora.access.domain.ApplicationTokenType;
+import com.clinora.access.domain.ApplicationType;
+import com.clinora.access.repository.AccessApplicationRepository;
+import com.clinora.access.repository.ApplicationDocumentRepository;
+import com.clinora.access.repository.ApplicationEventRepository;
+import com.clinora.access.repository.ApplicationTokenRepository;
+import com.clinora.access.repository.DoctorApplicationDetailRepository;
+import com.clinora.access.repository.DoctorQualificationRepository;
+import com.clinora.access.repository.ResearcherApplicationDetailRepository;
+import com.clinora.auth.service.PasswordPolicy;
+import com.clinora.audit.AuthAuditService;
+import com.clinora.config.AccessApplicationProperties;
+import com.clinora.security.PasswordService;
+import com.clinora.security.token.SecureTokenService;
+import com.clinora.users.domain.UserAccount;
+import com.clinora.users.domain.UserRole;
+import com.clinora.users.repository.UserAccountRepository;
+import com.clinora.users.service.EmailAddressNormalizer;
+import java.lang.reflect.Field;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.Optional;
+import java.util.UUID;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.test.util.ReflectionTestUtils;
+
+class AccessApplicationServiceTest {
+
+    private static final Instant NOW = Instant.parse("2026-08-09T12:00:00Z");
+
+    @Test
+    void doctorApplicationCreationDoesNotCreatePrivilegedUser() throws Exception {
+        ServiceFixture fixture = new ServiceFixture();
+
+        when(fixture.normalizer.normalize("doctor@example.com")).thenReturn("doctor@example.com");
+        when(fixture.users.existsByNormalizedEmail("doctor@example.com")).thenReturn(false);
+        when(fixture.applications.findFirstByNormalizedEmailAndStatusNotIn(any(), any())).thenReturn(Optional.empty());
+        when(fixture.applications.save(any(AccessApplication.class))).thenAnswer(invocation -> {
+            AccessApplication application = invocation.getArgument(0);
+            setId(application, UUID.randomUUID());
+            return application;
+        });
+
+        fixture.service.create(
+            ApplicationType.DOCTOR,
+            new AccessApplicationModels.CreateRequest(
+                "Amina",
+                "Rahman",
+                "doctor@example.com",
+                "+8801700000000",
+                "Bangladesh",
+                true
+            ),
+            "127.0.0.1",
+            "test-agent"
+        );
+
+        verify(fixture.users, never()).save(any(UserAccount.class));
+        verify(fixture.doctorDetails).save(any());
+        verify(fixture.mail).sendVerification(any(), any(), any());
+    }
+
+    @Test
+    void emailVerificationDoesNotCreateApplicantSession() throws Exception {
+        ServiceFixture fixture = new ServiceFixture();
+        UUID applicationId = UUID.randomUUID();
+        AccessApplication application = doctorApplication(applicationId);
+        String rawVerification = "verify-token";
+        ApplicationToken verificationToken = new ApplicationToken(
+            applicationId,
+            ApplicationTokenType.EMAIL_VERIFICATION,
+            fixture.tokens.hash(rawVerification),
+            NOW.plusSeconds(3600),
+            NOW
+        );
+
+        when(fixture.applicationTokens.findByTokenHashAndTokenType(
+            fixture.tokens.hash(rawVerification),
+            ApplicationTokenType.EMAIL_VERIFICATION
+        )).thenReturn(Optional.of(verificationToken));
+        when(fixture.applications.findById(applicationId)).thenReturn(Optional.of(application));
+        when(fixture.users.existsByNormalizedEmail("doctor@example.com")).thenReturn(false);
+
+        AccessApplicationModels.VerificationResult result = fixture.service.verifyEmail(
+            rawVerification,
+            "127.0.0.1",
+            "test-agent"
+        );
+
+        assertEquals(ApplicationStatus.DRAFT, application.getStatus());
+        assertNotNull(application.getEmailVerifiedAt());
+        assertNotNull(verificationToken.getConsumedAt());
+        assertNotNull(result.continuationToken());
+        verify(fixture.sessions, never()).issue(any(), any(), any());
+
+        ArgumentCaptor<ApplicationToken> tokenCaptor = ArgumentCaptor.forClass(ApplicationToken.class);
+        verify(fixture.applicationTokens).save(tokenCaptor.capture());
+        assertEquals(ApplicationTokenType.PORTAL_ACCESS, tokenCaptor.getValue().getTokenType());
+    }
+
+    @Test
+    void resumeLinkRequestResendsVerificationForUnverifiedApplication() throws Exception {
+        ServiceFixture fixture = new ServiceFixture();
+        AccessApplication application = doctorApplication(UUID.randomUUID());
+
+        when(fixture.normalizer.normalize("doctor@example.com")).thenReturn("doctor@example.com");
+        when(fixture.applications.findFirstByNormalizedEmailAndStatusNotIn(any(), any())).thenReturn(Optional.of(application));
+
+        fixture.service.requestAccessLink("doctor@example.com", "127.0.0.1", "test-agent");
+
+        verify(fixture.mail).sendVerification(any(), any(), any());
+        verify(fixture.mail, never()).sendAccessLink(any(), any(), any());
+        verify(fixture.applicationTokens).deleteAllByApplicationIdAndTokenType(
+            application.getId(), ApplicationTokenType.EMAIL_VERIFICATION);
+        ArgumentCaptor<ApplicationToken> tokenCaptor = ArgumentCaptor.forClass(ApplicationToken.class);
+        verify(fixture.applicationTokens).save(tokenCaptor.capture());
+        assertEquals(ApplicationTokenType.EMAIL_VERIFICATION, tokenCaptor.getValue().getTokenType());
+        assertEquals(ApplicationStatus.EMAIL_PENDING, application.getStatus());
+        verify(fixture.sessions, never()).issue(any(), any(), any());
+    }
+
+    @Test
+    void resumeLinkRequestPreservesPlusAliasForVerifiedApplication() throws Exception {
+        ServiceFixture fixture = new ServiceFixture();
+        AccessApplication application = new AccessApplication(ApplicationType.DOCTOR, "Redwan", "Test",
+            "clionorausers+Redwan@gmail.com", "clionorausers+redwan@gmail.com", null, null, NOW);
+        setId(application, UUID.randomUUID());
+        application.markEmailVerified(NOW);
+        when(fixture.normalizer.normalize(application.getEmail())).thenReturn(application.getNormalizedEmail());
+        when(fixture.applications.findFirstByNormalizedEmailAndStatusNotIn(any(), any())).thenReturn(Optional.of(application));
+
+        fixture.service.requestAccessLink(application.getEmail(), "127.0.0.1", "test-agent");
+
+        verify(fixture.mail).sendAccessLink(org.mockito.ArgumentMatchers.eq(application.getEmail()), any(), any());
+        verify(fixture.mail, never()).sendVerification(any(), any(), any());
+    }
+
+    @Test
+    void resumeLinkRequestForUnknownEmailDoesNotSendMail() {
+        ServiceFixture fixture = new ServiceFixture();
+        when(fixture.normalizer.normalize("unknown@example.com")).thenReturn("unknown@example.com");
+        when(fixture.applications.findFirstByNormalizedEmailAndStatusNotIn(any(), any())).thenReturn(Optional.empty());
+
+        fixture.service.requestAccessLink("unknown@example.com", "127.0.0.1", "test-agent");
+
+        verify(fixture.mail, never()).sendVerification(any(), any(), any());
+        verify(fixture.mail, never()).sendAccessLink(any(), any(), any());
+        verify(fixture.applicationTokens, never()).save(any());
+    }
+
+    @Test
+    void sessionCannotBeEstablishedForUnverifiedApplication() throws Exception {
+        ServiceFixture fixture = new ServiceFixture();
+        UUID applicationId = UUID.randomUUID();
+        AccessApplication application = doctorApplication(applicationId);
+        String rawAccess = "access-token";
+        ApplicationToken accessToken = new ApplicationToken(
+            applicationId,
+            ApplicationTokenType.PORTAL_ACCESS,
+            fixture.tokens.hash(rawAccess),
+            NOW.plusSeconds(3600),
+            NOW
+        );
+
+        when(fixture.applicationTokens.findByTokenHashAndTokenType(
+            fixture.tokens.hash(rawAccess),
+            ApplicationTokenType.PORTAL_ACCESS
+        )).thenReturn(Optional.of(accessToken));
+        when(fixture.applications.findById(applicationId)).thenReturn(Optional.of(application));
+
+        assertThrows(
+            AccessApplicationException.class,
+            () -> fixture.service.establishSession(rawAccess, "127.0.0.1", "test-agent")
+        );
+
+        verify(fixture.sessions, never()).issue(any(), any(), any());
+    }
+
+    @Test
+    void activationCreatesProfessionalUserAndConsumesToken() throws Exception {
+        ServiceFixture fixture = new ServiceFixture();
+        UUID applicationId = UUID.randomUUID();
+        AccessApplication application = doctorApplication(applicationId);
+        setStatus(application, ApplicationStatus.ACTIVATION_PENDING);
+        ReflectionTestUtils.setField(application, "emailVerifiedAt", NOW.minusSeconds(300));
+        String rawActivation = "activation-token";
+        ApplicationToken activationToken = new ApplicationToken(
+            applicationId,
+            ApplicationTokenType.ACCOUNT_ACTIVATION,
+            fixture.tokens.hash(rawActivation),
+            NOW.plusSeconds(3600),
+            NOW
+        );
+
+        when(fixture.applicationTokens.findByTokenHashAndTokenType(
+            fixture.tokens.hash(rawActivation),
+            ApplicationTokenType.ACCOUNT_ACTIVATION
+        )).thenReturn(Optional.of(activationToken));
+        when(fixture.applications.findById(applicationId)).thenReturn(Optional.of(application));
+        when(fixture.users.existsByNormalizedEmail("doctor@example.com")).thenReturn(false);
+        when(fixture.passwords.hash("ValidPass1!")).thenReturn("encoded-password");
+
+        fixture.service.activateAccount(rawActivation, "ValidPass1!", "127.0.0.1", "test-agent");
+
+        assertEquals(ApplicationStatus.ACTIVATED, application.getStatus());
+        assertNotNull(activationToken.getConsumedAt());
+        ArgumentCaptor<UserAccount> user = ArgumentCaptor.forClass(UserAccount.class);
+        verify(fixture.users).save(user.capture());
+        assertEquals(UserRole.DOCTOR, user.getValue().getRole());
+        assertEquals("encoded-password", user.getValue().getPasswordHash());
+        assertNotNull(user.getValue().getEmailVerifiedAt());
+        verify(fixture.sessions).revokeAllForApplication(applicationId);
+    }
+
+    @Test
+    void activationRejectsDuplicateAccountEmail() throws Exception {
+        ServiceFixture fixture = new ServiceFixture();
+        UUID applicationId = UUID.randomUUID();
+        AccessApplication application = doctorApplication(applicationId);
+        setStatus(application, ApplicationStatus.ACTIVATION_PENDING);
+        ReflectionTestUtils.setField(application, "emailVerifiedAt", NOW.minusSeconds(300));
+        String rawActivation = "activation-token";
+        ApplicationToken activationToken = new ApplicationToken(
+            applicationId,
+            ApplicationTokenType.ACCOUNT_ACTIVATION,
+            fixture.tokens.hash(rawActivation),
+            NOW.plusSeconds(3600),
+            NOW
+        );
+
+        when(fixture.applicationTokens.findByTokenHashAndTokenType(
+            fixture.tokens.hash(rawActivation),
+            ApplicationTokenType.ACCOUNT_ACTIVATION
+        )).thenReturn(Optional.of(activationToken));
+        when(fixture.applications.findById(applicationId)).thenReturn(Optional.of(application));
+        when(fixture.users.existsByNormalizedEmail("doctor@example.com")).thenReturn(true);
+
+        assertThrows(
+            AccessApplicationException.class,
+            () -> fixture.service.activateAccount(rawActivation, "ValidPass1!", null, null)
+        );
+
+        verify(fixture.users, never()).save(any(UserAccount.class));
+    }
+
+    @Test
+    void activationHandlesConcurrentDuplicateUserCreation() throws Exception {
+        ServiceFixture fixture = new ServiceFixture();
+        UUID applicationId = UUID.randomUUID();
+        AccessApplication application = doctorApplication(applicationId);
+        setStatus(application, ApplicationStatus.ACTIVATION_PENDING);
+        ReflectionTestUtils.setField(application, "emailVerifiedAt", NOW.minusSeconds(300));
+        String rawActivation = "activation-token";
+        ApplicationToken activationToken = activationToken(applicationId, fixture, rawActivation, NOW.plusSeconds(3600));
+
+        when(fixture.applicationTokens.findByTokenHashAndTokenType(
+            fixture.tokens.hash(rawActivation),
+            ApplicationTokenType.ACCOUNT_ACTIVATION
+        )).thenReturn(Optional.of(activationToken));
+        when(fixture.applications.findById(applicationId)).thenReturn(Optional.of(application));
+        when(fixture.users.existsByNormalizedEmail("doctor@example.com")).thenReturn(false);
+        when(fixture.passwords.hash("ValidPass1!")).thenReturn("encoded-password");
+        when(fixture.users.save(any(UserAccount.class))).thenThrow(new DataIntegrityViolationException("duplicate"));
+
+        assertThrows(
+            AccessApplicationException.class,
+            () -> fixture.service.activateAccount(rawActivation, "ValidPass1!", null, null)
+        );
+
+        assertEquals(ApplicationStatus.ACTIVATION_PENDING, application.getStatus());
+    }
+
+    @Test
+    void activationRejectsUsedExpiredOrWrongPurposeTokens() throws Exception {
+        ServiceFixture fixture = new ServiceFixture();
+        UUID applicationId = UUID.randomUUID();
+        AccessApplication application = doctorApplication(applicationId);
+        setStatus(application, ApplicationStatus.ACTIVATION_PENDING);
+        ReflectionTestUtils.setField(application, "emailVerifiedAt", NOW.minusSeconds(300));
+
+        ApplicationToken used = activationToken(applicationId, fixture, "used-token", NOW.plusSeconds(3600));
+        used.consume(NOW.minusSeconds(60));
+        when(fixture.applicationTokens.findByTokenHashAndTokenType(
+            fixture.tokens.hash("used-token"),
+            ApplicationTokenType.ACCOUNT_ACTIVATION
+        )).thenReturn(Optional.of(used));
+
+        ApplicationToken expired = activationToken(applicationId, fixture, "expired-token", NOW.minusSeconds(1));
+        when(fixture.applicationTokens.findByTokenHashAndTokenType(
+            fixture.tokens.hash("expired-token"),
+            ApplicationTokenType.ACCOUNT_ACTIVATION
+        )).thenReturn(Optional.of(expired));
+
+        when(fixture.applications.findById(applicationId)).thenReturn(Optional.of(application));
+
+        assertThrows(
+            AccessApplicationException.class,
+            () -> fixture.service.activateAccount("used-token", "ValidPass1!", null, null)
+        );
+        assertThrows(
+            AccessApplicationException.class,
+            () -> fixture.service.activateAccount("expired-token", "ValidPass1!", null, null)
+        );
+        assertThrows(
+            AccessApplicationException.class,
+            () -> fixture.service.activateAccount("portal-token", "ValidPass1!", null, null)
+        );
+
+        verify(fixture.users, never()).save(any(UserAccount.class));
+    }
+
+    private static AccessApplication doctorApplication(UUID applicationId) throws Exception {
+        AccessApplication application = new AccessApplication(
+            ApplicationType.DOCTOR,
+            "Amina",
+            "Rahman",
+            "doctor@example.com",
+            "doctor@example.com",
+            "+8801700000000",
+            "Bangladesh",
+            NOW
+        );
+        setId(application, applicationId);
+        return application;
+    }
+
+    private static void setId(AccessApplication application, UUID id) throws Exception {
+        Field field = AccessApplication.class.getDeclaredField("id");
+        field.setAccessible(true);
+        field.set(application, id);
+    }
+
+    private static void setStatus(AccessApplication application, ApplicationStatus status) {
+        ReflectionTestUtils.setField(application, "status", status);
+    }
+
+    private static ApplicationToken activationToken(
+        UUID applicationId,
+        ServiceFixture fixture,
+        String rawToken,
+        Instant expiresAt
+    ) {
+        return new ApplicationToken(
+            applicationId,
+            ApplicationTokenType.ACCOUNT_ACTIVATION,
+            fixture.tokens.hash(rawToken),
+            expiresAt,
+            NOW
+        );
+    }
+
+    private static class ServiceFixture {
+        final AccessApplicationRepository applications = Mockito.mock(AccessApplicationRepository.class);
+        final DoctorApplicationDetailRepository doctorDetails = Mockito.mock(DoctorApplicationDetailRepository.class);
+        final ResearcherApplicationDetailRepository researcherDetails = Mockito.mock(ResearcherApplicationDetailRepository.class);
+        final DoctorQualificationRepository qualifications = Mockito.mock(DoctorQualificationRepository.class);
+        final ApplicationDocumentRepository documents = Mockito.mock(ApplicationDocumentRepository.class);
+        final ApplicationTokenRepository applicationTokens = Mockito.mock(ApplicationTokenRepository.class);
+        final ApplicationEventRepository events = Mockito.mock(ApplicationEventRepository.class);
+        final UserAccountRepository users = Mockito.mock(UserAccountRepository.class);
+        final EmailAddressNormalizer normalizer = Mockito.mock(EmailAddressNormalizer.class);
+        final SecureTokenService tokens = new SecureTokenService();
+        final PasswordService passwords = Mockito.mock(PasswordService.class);
+        final PasswordPolicy passwordPolicy = new PasswordPolicy();
+        final ApplicantSessionService sessions = Mockito.mock(ApplicantSessionService.class);
+        final AccessApplicationMailService mail = Mockito.mock(AccessApplicationMailService.class);
+        final AccessApplicationProperties properties = new AccessApplicationProperties();
+        final AuthAuditService audit = Mockito.mock(AuthAuditService.class);
+        final AccessApplicationService service = new AccessApplicationService(
+            applications,
+            doctorDetails,
+            researcherDetails,
+            qualifications,
+            documents,
+            applicationTokens,
+            events,
+            users,
+            normalizer,
+            tokens,
+            passwords,
+            passwordPolicy,
+            sessions,
+            mail,
+            properties,
+            audit,
+            Clock.fixed(NOW, ZoneOffset.UTC)
+        );
+    }
+}

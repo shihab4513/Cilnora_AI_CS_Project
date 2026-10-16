@@ -1,0 +1,286 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-clinora}
+      POSTGRES_USER: ${POSTGRES_USER:-clinora}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    ports:
+      - "55432:5432"
+    volumes:
+      - clinora-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - clinora-private
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    command: >
+      sh -c "rabbitmq-plugins enable --offline rabbitmq_stomp &&
+             rabbitmq-server"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-clinora}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-change-me}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE:-clinora-local-erlang-cookie-change-me}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+      - "61613:61613"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - clinora-private
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - clinora-private
+
+
+  minio:
+    image: quay.io/minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-clinora-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-minio}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - clinora-minio-data:/data
+    networks:
+      - clinora-private
+
+  clamav:
+    image: clamav/clamav:1.4
+    volumes:
+      - clinora-clamav-data:/var/lib/clamav
+    networks:
+      - clinora-private
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      BACKEND_PORT: ${BACKEND_PORT:-8080}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev,retained-approved}
+      DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-clinora}
+      POSTGRES_USER: ${POSTGRES_USER:-clinora}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_STOMP_PORT: 61613
+      RABBITMQ_USER: ${RABBITMQ_USER:-clinora}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-change-me}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      OCR_SERVICE_URL: http://ocr-service:8000
+      CLINORA_SERVICES_OCR_TOKEN: ${OCR_INTERNAL_TOKEN:-dev-only-clinora-ocr-token-change-me}
+      AI_SERVICE_URL: ${COMPOSE_AI_SERVICE_URL:-http://host.docker.internal:8001}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_API_BASE_URL: ${GEMINI_API_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
+      AI_INTERNAL_TOKEN: ${AI_INTERNAL_TOKEN:-dev-only-clinora-ai-token-change-me}
+      AI_PROMPT_VERSION: ${AI_PROMPT_VERSION:-patient-lab-report-v5}
+      AI_SCHEMA_VERSION: ${AI_SCHEMA_VERSION:-1.1}
+      AI_BACKEND_CONNECT_TIMEOUT_MS: ${AI_BACKEND_CONNECT_TIMEOUT_MS:-5000}
+      AI_BACKEND_READ_TIMEOUT_MS: ${AI_BACKEND_READ_TIMEOUT_MS:-240000}
+      AI_DOCTOR_READ_TIMEOUT_MS: ${AI_DOCTOR_READ_TIMEOUT_MS:-15000}
+      HF_MODEL: ${HF_MODEL:-google/medgemma-1.5-4b-it}
+      HF_MODEL_REVISION: ${HF_MODEL_REVISION:-main}
+      AI_ANALYSIS_QUEUE: ${AI_ANALYSIS_QUEUE:-clinora.patient-report-ai-analysis}
+      AI_RECOVERY_MIN_AGE_SECONDS: ${AI_RECOVERY_MIN_AGE_SECONDS:-15}
+      AI_PROCESSING_TIMEOUT_SECONDS: ${AI_PROCESSING_TIMEOUT_SECONDS:-300}
+      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-clinora-ai}
+      AUTH_ACCESS_TOKEN_TTL: ${AUTH_ACCESS_TOKEN_TTL:-15m}
+      AUTH_REFRESH_TOKEN_TTL: ${AUTH_REFRESH_TOKEN_TTL:-7d}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-clinora-jwt-secret-change-me-32-bytes}
+      RATE_LIMIT_KEY_SECRET: ${RATE_LIMIT_KEY_SECRET:-dev-only-clinora-rate-limit-key-change-me}
+      BCRYPT_STRENGTH: ${BCRYPT_STRENGTH:-12}
+      SYSTEM_ADMIN_EMAIL: ${SYSTEM_ADMIN_EMAIL:-}
+      SYSTEM_ADMIN_PASSWORD: ${SYSTEM_ADMIN_PASSWORD:-}
+      SYSTEM_ADMIN_FIRST_NAME: ${SYSTEM_ADMIN_FIRST_NAME:-}
+      SYSTEM_ADMIN_LAST_NAME: ${SYSTEM_ADMIN_LAST_NAME:-}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+      APP_FRONTEND_URL: ${APP_FRONTEND_URL:-http://localhost:5173}
+      GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+      BLOOD_NETWORK_DEMO_SEED_ENABLED: ${BLOOD_NETWORK_DEMO_SEED_ENABLED:-false}
+      BLOOD_NETWORK_DEMO_LOGIN_PASSWORD: ${BLOOD_NETWORK_DEMO_LOGIN_PASSWORD:-}
+      CLINORA_DEV_DOCTORS_ENABLED: ${CLINORA_DEV_DOCTORS_ENABLED:-false}
+      CLINORA_DEV_DOCTORS_PASSWORD: ${CLINORA_DEV_DOCTORS_PASSWORD:-}
+      CLINORA_DEV_PATIENTS_PASSWORD: ${CLINORA_DEV_PATIENTS_PASSWORD:-}
+      CLINORA_DEV_RESEARCHERS_ENABLED: ${CLINORA_DEV_RESEARCHERS_ENABLED:-true}
+      CLINORA_DEV_RESEARCHER_PASSWORD: ${CLINORA_DEV_RESEARCHER_PASSWORD:-}
+      CLINORA_DEV_RESEARCH_PATIENTS_ENABLED: ${CLINORA_DEV_RESEARCH_PATIENTS_ENABLED:-false}
+      CLINORA_DEV_ADMIN_PASSWORD: ${CLINORA_DEV_ADMIN_PASSWORD:-}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-unconfigured}
+      MAIL_FROM: ${MAIL_FROM:-Clinora AI <noreply@example.invalid>}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_API_BASE_URL: ${EMAIL_API_BASE_URL:-https://api.resend.com}
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-clinora-medical-reports}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-clinora-minio}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-change-me-minio}
+      S3_PATH_STYLE: true
+      S3_AUTO_CREATE_BUCKET: true
+      S3_RESEARCH_ENDPOINT: http://minio:9000
+      S3_RESEARCH_BUCKET: clinora-research-datasets
+      CLINORA_RESEARCH_MIN_COHORT_SIZE: ${CLINORA_RESEARCH_MIN_COHORT_SIZE:-5}
+      CLINORA_RESEARCH_PSEUDONYM_SECRET: ${CLINORA_RESEARCH_PSEUDONYM_SECRET:-dev-only-clinora-research-pseudonym-secret-change-me}
+      PATIENT_REPORT_MAX_FILE_SIZE: ${PATIENT_REPORT_MAX_FILE_SIZE:-20MB}
+      PATIENT_REPORT_MAX_REQUEST_SIZE: ${PATIENT_REPORT_MAX_REQUEST_SIZE:-21MB}
+      CLINORA_STORAGE_MALWARE_ENABLED: ${PATIENT_REPORT_MALWARE_SCAN_ENABLED:-true}
+      CLINORA_STORAGE_MALWARE_FAIL_CLOSED: ${PATIENT_REPORT_MALWARE_FAIL_CLOSED:-true}
+      CLINORA_STORAGE_MALWARE_HOST: ${PATIENT_REPORT_MALWARE_HOST:-clamav}
+      CLINORA_STORAGE_MALWARE_PORT: ${PATIENT_REPORT_MALWARE_PORT:-3310}
+      CLINORA_STORAGE_MALWARE_TIMEOUT_MS: ${PATIENT_REPORT_MALWARE_TIMEOUT_MS:-5000}
+      S3_APPLICATION_ENDPOINT: http://minio:9000
+      S3_APPLICATION_REGION: ${S3_APPLICATION_REGION:-us-east-1}
+      S3_APPLICATION_BUCKET: ${S3_APPLICATION_BUCKET:-clinora-access-documents}
+      S3_APPLICATION_ACCESS_KEY: ${MINIO_ROOT_USER:-clinora-minio}
+      S3_APPLICATION_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-change-me-minio}
+      S3_APPLICATION_PATH_STYLE: true
+      S3_APPLICATION_AUTO_CREATE_BUCKET: true
+      APPLICATION_INTERVIEW_DEFAULT_DURATION: ${APPLICATION_INTERVIEW_DEFAULT_DURATION:-30m}
+      APPLICATION_INTERVIEW_REMINDER_OFFSETS: ${APPLICATION_INTERVIEW_REMINDER_OFFSETS:-24h,1h}
+      APPLICATION_INTERVIEW_REMINDER_SCAN_DELAY_MS: ${APPLICATION_INTERVIEW_REMINDER_SCAN_DELAY_MS:-60000}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      clamav:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - clinora-private
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      # Local Compose always routes browser API calls through Vite's relative /api proxy.
+      VITE_API_BASE_URL: /api/v1
+      VITE_GOOGLE_MAPS_API_KEY: ${VITE_GOOGLE_MAPS_API_KEY:-}
+      DEV_API_PROXY_TARGET: ${DEV_API_PROXY_TARGET:-http://backend:8080}
+      VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8080/ws}
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5173 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - clinora-private
+
+  ocr-service:
+    build:
+      context: ./ocr-service
+    restart: unless-stopped
+    environment:
+      OCR_INTERNAL_TOKEN: ${OCR_INTERNAL_TOKEN:-dev-only-clinora-ocr-token-change-me}
+      OCR_ENGINE: ${OCR_ENGINE:-auto}
+      OCR_LANG: ${OCR_LANG:-en}
+      # One persistent native thread owns initialization and inference.
+      OCR_MAX_WORKERS: "1"
+      OCR_JOB_TIMEOUT_SECONDS: ${OCR_JOB_TIMEOUT_SECONDS:-180}
+      OCR_MAX_FILE_SIZE_MB: ${OCR_MAX_FILE_SIZE_MB:-20}
+      OCR_MAX_PAGES: ${OCR_MAX_PAGES:-10}
+      OCR_MAX_PAGE_PIXELS: ${OCR_MAX_PAGE_PIXELS:-30000000}
+      OCR_PDF_DPI: ${OCR_PDF_DPI:-200}
+      OCR_NUMERIC_REVIEW_THRESHOLD: ${OCR_NUMERIC_REVIEW_THRESHOLD:-0.95}
+      OCR_TABLE_RECOGNITION_ENABLED: ${OCR_TABLE_RECOGNITION_ENABLED:-true}
+      OCR_REGION_DETECTION_ENABLED: ${OCR_REGION_DETECTION_ENABLED:-true}
+    ports:
+      - "8000:8000"
+    volumes:
+      - clinora-paddle-models:/root/.paddlex
+    healthcheck:
+      start_period: 180s
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - clinora-private
+
+  ai-service:
+    # Local development uses Windows FastAPI; enable this container explicitly only.
+    profiles: [container-ai]
+    build:
+      context: ./ai-service
+    environment:
+      AI_INTERNAL_TOKEN: ${AI_INTERNAL_TOKEN:-dev-only-clinora-ai-token-change-me}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_API_BASE_URL: ${GEMINI_API_BASE_URL:-https://generativelanguage.googleapis.com/v1beta}
+      GEMINI_CONNECT_TIMEOUT_SECONDS: ${GEMINI_CONNECT_TIMEOUT_SECONDS:-5}
+      GEMINI_READ_TIMEOUT_SECONDS: ${GEMINI_READ_TIMEOUT_SECONDS:-12}
+      GEMINI_MAX_ATTEMPTS: ${GEMINI_MAX_ATTEMPTS:-2}
+      HF_MODEL: ${HF_MODEL:-google/medgemma-1.5-4b-it}
+      HF_MODEL_REVISION: ${HF_MODEL_REVISION:-main}
+      AI_QUANTIZATION: ${AI_QUANTIZATION:-Q4_0}
+      AI_MAX_CONCURRENT_REQUESTS: ${AI_MAX_CONCURRENT_REQUESTS:-1}
+      AI_MAX_NEW_TOKENS: ${AI_MAX_NEW_TOKENS:-3072}
+      AI_GENERATION_SEED: ${AI_GENERATION_SEED:-0}
+      AI_PROMPT_VERSION: ${AI_PROMPT_VERSION:-patient-lab-report-v5}
+      LLAMA_SERVER_URL: ${LLAMA_SERVER_URL:-http://127.0.0.1:8002}
+      LLAMA_CONNECT_TIMEOUT_SECONDS: ${LLAMA_CONNECT_TIMEOUT_SECONDS:-5}
+      LLAMA_READ_TIMEOUT_SECONDS: ${LLAMA_READ_TIMEOUT_SECONDS:-240}
+      CLINICAL_KNOWLEDGE_DB_PATH: /data/clinical-knowledge.db
+    ports:
+      - "8001:8001"
+    volumes:
+      - clinora-clinical-knowledge:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - clinora-private
+
+networks:
+  clinora-private:
+    driver: bridge
+
+volumes:
+  clinora-postgres-data:
+  clinora-minio-data:
+  clinora-clamav-data:
+  clinora-paddle-models:
+  clinora-clinical-knowledge:

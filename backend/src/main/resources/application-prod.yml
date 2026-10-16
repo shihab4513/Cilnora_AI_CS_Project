@@ -1,0 +1,35 @@
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+clinora:
+  auth:
+    jwt-secret: ${JWT_SECRET}
+    rate-limit-key-secret: ${RATE_LIMIT_KEY_SECRET}
+    refresh-cookie-secure: ${AUTH_REFRESH_COOKIE_SECURE:true}
+  security:
+    cors:
+      allowed-origins: ${CORS_ALLOWED_ORIGINS}
+  email:
+    provider: ${EMAIL_PROVIDER}
+    frontend-url: ${APP_FRONTEND_URL}
+    from: ${MAIL_FROM}
+    api-key: ${RESEND_API_KEY:}
+  access-applications:
+    cookie-secure: ${APPLICATION_COOKIE_SECURE:true}
+  storage:
+    endpoint: ${S3_ENDPOINT}
+    region: ${S3_REGION}
+    bucket: ${S3_BUCKET}
+    access-key: ${S3_ACCESS_KEY}
+    secret-key: ${S3_SECRET_KEY}
+    path-style: ${S3_PATH_STYLE:false}
+    auto-create-bucket: ${S3_AUTO_CREATE_BUCKET:false}
+    max-file-size: ${PATIENT_REPORT_MAX_FILE_SIZE:20MB}
+    malware:
+      enabled: ${PATIENT_REPORT_MALWARE_SCAN_ENABLED:true}
+      fail-closed: ${PATIENT_REPORT_MALWARE_FAIL_CLOSED:true}
+      host: ${PATIENT_REPORT_MALWARE_HOST:clamav}
+      port: ${PATIENT_REPORT_MALWARE_PORT:3310}
+      timeout-ms: ${PATIENT_REPORT_MALWARE_TIMEOUT_MS:5000}

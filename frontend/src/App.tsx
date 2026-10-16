@@ -1,0 +1,258 @@
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
+import './styles-r3.css';
+import { LandingPage } from './components/landing/landing-page';
+import { PublicLayout } from './components/public/public-layout';
+import { AuthLayout } from './features/auth/auth-layout';
+import { AuthProvider } from './features/auth/auth-provider';
+import { ApplicationLayout } from './features/access-applications/application-layout';
+import { ProtectedRoute } from './features/auth/protected-route';
+import { AccountPage } from './pages/auth/account-page';
+import { ForgotPasswordPage } from './pages/auth/forgot-password-page';
+import { LoginPage } from './pages/auth/login-page';
+import { RegisterPage } from './pages/auth/register-page';
+import { ResetPasswordPage } from './pages/auth/reset-password-page';
+import { VerifyEmailPage } from './pages/auth/verify-email-page';
+import { ApplicationEmailVerificationPage } from './pages/applications/application-email-verification-page';
+import { ApplicationActivationPage } from './pages/applications/application-activation-page';
+import { ApplicationStatusPage } from './pages/applications/application-status-page';
+import { ProfessionalApplicationPage } from './pages/applications/professional-application-page';
+import { AccessReviewsPage } from './pages/admin/access-reviews-page';
+import { AdminResearchersPage } from './pages/admin/admin-researchers-page';
+import { AdminResearcherDetailPage } from './pages/admin/admin-researcher-detail-page';
+import { ResearchCredentialsPage } from './pages/research/research-credentials-page';
+import { AboutPage } from './pages/public/about-page';
+import { AiClinicalIntelligencePage } from './pages/public/ai-clinical-intelligence-page';
+import { ContactPage } from './pages/public/contact-page';
+import { EmergencyBloodAssistancePage } from './pages/public/emergency-blood-assistance-page';
+import { FaqPage } from './pages/public/faq-page';
+import { FeaturesPage } from './pages/public/features-page';
+import { LaboratoryOcrPage } from './pages/public/laboratory-ocr-page';
+import { NotFoundPage } from './pages/public/not-found-page';
+import { PrivacyPage } from './pages/public/privacy-page';
+import { ProfessionalAccessPage } from './pages/public/professional-access-page';
+import { ResearchPage } from './pages/public/research-page';
+import { TermsPage } from './pages/public/terms-page';
+import { PatientLayout } from './features/patient/patient-layout';
+import { PatientShell } from './features/patient/patient-layout';
+import { useAuthStore } from './features/auth/auth-store';
+import { PatientProfilePage } from './pages/patient/patient-profile-page';
+import { PatientReportAnalysisPage } from './pages/patient/patient-report-analysis-page';
+import { PatientReportAiInsightPage } from './pages/patient/patient-report-ai-insight-page';
+import { PatientReportDetailPage } from './pages/patient/patient-report-detail-page';
+import { PatientReportsPage } from './pages/patient/patient-reports-page';
+import { PatientPortalPage } from './pages/patient/patient-portal-r3-page';
+import { PatientHealthRecordPage } from './pages/patient/patient-health-record-page';
+import { PatientHealthSummaryPage } from './pages/patient/patient-health-summary-page';
+import { PatientTimelinePage } from './pages/patient/patient-timeline-page';
+import { PatientDoctorsPage } from './pages/patient/patient-doctors-page';
+import { PatientDoctorDetailPage } from './pages/patient/patient-doctor-detail-r3-page';
+import { PatientAppointmentsPage } from './pages/patient/patient-appointments-page';
+import { PatientAppointmentDetailPage } from './pages/patient/patient-appointment-detail-page';
+import { PatientPrescriptionsPage } from './pages/patient/patient-prescriptions-page';
+import { PatientNotificationsPage } from './pages/patient/patient-notifications-page';
+import { PatientBloodNetworkPage } from './pages/patient/patient-blood-network-page';
+import { DoctorLayout, DoctorShell } from './features/doctor/doctor-layout-r3';
+import { DoctorAppointmentPage } from './pages/doctor/doctor-appointment-page';
+import { DoctorAvailabilityWorkspacePage } from './pages/doctor/doctor-availability-r3-page';
+import { DoctorClinicalInboxPage } from './pages/doctor/doctor-clinical-inbox-page';
+import { DoctorConsultationPage } from './pages/doctor/doctor-consultation-page';
+import { DoctorDashboardPage } from './pages/doctor/doctor-dashboard-r3-page';
+import { DoctorPatientDetailPage } from './pages/doctor/doctor-patient-detail-page';
+import { DoctorPatientsPage } from './pages/doctor/doctor-patients-page';
+import { DoctorProfilePage } from './pages/doctor/doctor-profile-r3-page';
+import { DoctorReportComparePage } from './pages/doctor/doctor-report-compare-page';
+import { DoctorReportReviewPage } from './pages/doctor/doctor-report-review-page';
+import { DoctorSchedulePage } from './pages/doctor/doctor-schedule-r3-page';
+import { DoctorNotificationsPage } from './pages/doctor/doctor-notifications-page';
+import { PublicNavbar } from './components/public/public-navbar';
+import { PublicFooter } from './components/public/public-footer';
+import { ResearchLayout } from './features/research/research-layout';
+import { ResearchDashboardPage } from './pages/research/research-dashboard-page';
+import { ResearchProjectsPage } from './pages/research/research-projects-page';
+import { ResearchProjectFormPage } from './pages/research/research-project-form-page';
+import { ResearchProjectDetailPage } from './pages/research/research-project-detail-page';
+import { DatasetRequestFormPage } from './pages/research/dataset-request-form-page';
+import { DatasetRequestDetailPage } from './pages/research/dataset-request-detail-page';
+import { DatasetsPage } from './pages/research/datasets-page';
+import { DatasetDetailPage } from './pages/research/dataset-detail-page';
+import { ResearchLibraryPage } from './pages/research/research-library-page';
+import { AdminResearchProjectsPage } from './pages/admin/admin-research-projects-page';
+import { AdminResearchDatasetRequestsPage } from './pages/admin/admin-research-dataset-requests-page';
+import { AdminLayout, AdminShell } from './features/admin/admin-layout';
+
+export function AppRoutes() {
+  return (
+    <Routes>
+      <Route element={<PublicLayout />}>
+        <Route index element={<LandingPage />} />
+        <Route path="features" element={<FeaturesPage />} />
+        <Route path="ai-clinical-intelligence" element={<AiClinicalIntelligencePage />} />
+        <Route path="laboratory-ocr" element={<LaboratoryOcrPage />} />
+        <Route path="emergency-blood-assistance" element={<EmergencyBloodAssistancePage />} />
+        <Route path="about" element={<AboutPage />} />
+        <Route path="contact" element={<ContactPage />} />
+        <Route path="faq" element={<FaqPage />} />
+        <Route path="privacy" element={<PrivacyPage />} />
+        <Route path="terms" element={<TermsPage />} />
+        <Route path="professional-access" element={<ProfessionalAccessPage />} />
+      </Route>
+
+      {/* Role-aware /research route */}
+      <Route path="research" element={<RoleAwareResearchRoute />} />
+
+      <Route element={<AuthLayout />}>
+        <Route path="login" element={<LoginPage />} />
+        <Route path="register" element={<RegisterPage />} />
+        <Route path="verify-email" element={<VerifyEmailPage />} />
+        <Route path="forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="reset-password" element={<ResetPasswordPage />} />
+      </Route>
+
+      <Route element={<ApplicationLayout />}>
+        <Route path="apply/doctor" element={<ProfessionalApplicationPage type="DOCTOR" />} />
+        <Route path="apply/researcher" element={<ProfessionalApplicationPage type="RESEARCHER" />} />
+        <Route path="application/email-verification" element={<ApplicationEmailVerificationPage />} />
+        <Route path="application/activate" element={<ApplicationActivationPage />} />
+        <Route path="application/status" element={<ApplicationStatusPage />} />
+      </Route>
+
+      <Route element={<ProtectedRoute />}>
+        <Route path="account" element={<RoleAwareAccountPage />} />
+      </Route>
+
+      <Route element={<ProtectedRoute allowedRoles={['PATIENT']} />}>
+        <Route element={<PatientLayout />}>
+          <Route path="patient" element={<PatientPortalPage />} />
+          <Route path="patient/profile" element={<PatientProfilePage />} />
+          <Route path="patient/analyze" element={<PatientReportAnalysisPage />} />
+          <Route path="patient/analyze/:reportId" element={<PatientReportAnalysisPage />} />
+          <Route path="patient/analyze/:reportId/insight" element={<PatientReportAiInsightPage />} />
+          <Route path="patient/reports" element={<PatientReportsPage />} />
+          <Route path="patient/reports/:reportId" element={<PatientReportDetailPage />} />
+          <Route path="patient/history" element={<PatientHealthRecordPage />} />
+          <Route path="patient/summary" element={<PatientHealthSummaryPage />} />
+          <Route path="patient/timeline" element={<PatientTimelinePage />} />
+          <Route path="patient/doctors" element={<PatientDoctorsPage />} />
+          <Route path="patient/doctors/:doctorId" element={<PatientDoctorDetailPage />} />
+          <Route path="patient/appointments" element={<PatientAppointmentsPage />} />
+          <Route path="patient/appointments/:appointmentId" element={<PatientAppointmentDetailPage />} />
+          <Route path="patient/prescriptions" element={<PatientPrescriptionsPage />} />
+          <Route path="patient/blood-network" element={<PatientBloodNetworkPage />} />
+          <Route path="patient/notifications" element={<PatientNotificationsPage />} />
+        </Route>
+      </Route>
+
+      <Route element={<ProtectedRoute allowedRoles={['DOCTOR']} />}>
+        <Route element={<DoctorLayout />}>
+          <Route path="doctor" element={<DoctorDashboardPage />} />
+          <Route path="doctor/schedule" element={<DoctorSchedulePage />} />
+          <Route path="doctor/inbox" element={<DoctorClinicalInboxPage />} />
+          <Route path="doctor/notifications" element={<DoctorNotificationsPage />} />
+          <Route path="doctor/patients" element={<DoctorPatientsPage />} />
+          <Route path="doctor/patients/:patientId" element={<DoctorPatientDetailPage />} />
+          <Route path="doctor/appointments/:appointmentId" element={<DoctorAppointmentPage />} />
+          <Route path="doctor/appointments/:appointmentId/consultation" element={<DoctorConsultationPage />} />
+          <Route path="doctor/appointments/:appointmentId/reports/compare" element={<DoctorReportComparePage />} />
+          <Route path="doctor/appointments/:appointmentId/reports/:reportId" element={<DoctorReportReviewPage />} />
+          <Route path="doctor/availability" element={<DoctorAvailabilityWorkspacePage />} />
+          <Route path="doctor/profile" element={<DoctorProfilePage />} />
+        </Route>
+      </Route>
+
+      {/* Governed Research Workspace (Researcher) */}
+      <Route element={<ProtectedRoute allowedRoles={['RESEARCHER']} />}>
+        <Route element={<ResearchLayout />}>
+          <Route path="research/profile" element={<PatientProfilePage />} />
+          <Route path="research/credentials" element={<ResearchCredentialsPage />} />
+          <Route path="research/projects" element={<ResearchProjectsPage />} />
+          <Route path="research/projects/new" element={<ResearchProjectFormPage />} />
+          <Route path="research/projects/:projectId" element={<ResearchProjectDetailPage />} />
+          <Route path="research/projects/:projectId/edit" element={<ResearchProjectFormPage />} />
+          <Route path="research/projects/:projectId/dataset-requests/new" element={<DatasetRequestFormPage />} />
+          <Route path="research/dataset-requests/:requestId" element={<DatasetRequestDetailPage />} />
+          <Route path="research/datasets" element={<DatasetsPage />} />
+          <Route path="research/datasets/:datasetId" element={<DatasetDetailPage />} />
+          <Route path="research/library" element={<ResearchLibraryPage />} />
+          <Route path="research/notifications" element={<PatientNotificationsPage />} />
+        </Route>
+      </Route>
+
+      {/* Protected Administration */}
+      <Route element={<ProtectedRoute allowedRoles={['SYSTEM_ADMIN']} />}>
+        <Route element={<AdminLayout />}>
+          <Route path="admin" element={<Navigate to="/admin/research/projects" replace />} />
+          <Route path="admin/access-reviews" element={<AccessReviewsPage />} />
+          <Route path="admin/researchers" element={<AdminResearchersPage />} />
+          <Route path="admin/researchers/:researcherUserId" element={<AdminResearcherDetailPage />} />
+          <Route path="admin/research/projects" element={<AdminResearchProjectsPage />} />
+          <Route path="admin/research/projects/:projectId" element={<AdminResearchProjectsPage />} />
+          <Route path="admin/research/dataset-requests" element={<AdminResearchDatasetRequestsPage />} />
+          <Route path="admin/research/dataset-requests/:requestId" element={<AdminResearchDatasetRequestsPage />} />
+        </Route>
+      </Route>
+
+      <Route path="*" element={<NotFoundPage />} />
+    </Routes>
+  );
+}
+
+function RoleAwareResearchRoute() {
+  const user = useAuthStore((state) => state.user);
+  if (user?.role === 'RESEARCHER') {
+    return (
+      <ResearchLayout>
+        <ResearchDashboardPage />
+      </ResearchLayout>
+    );
+  }
+  return (
+    <div className="min-h-screen overflow-x-hidden bg-[#020617] text-slate-50">
+      <PublicNavbar />
+      <ResearchPage />
+      <PublicFooter />
+    </div>
+  );
+}
+
+function RoleAwareAccountPage() {
+  const role = useAuthStore((state) => state.user?.role);
+  if (role === 'PATIENT') {
+    return (
+      <PatientShell>
+        <AccountPage embedded />
+      </PatientShell>
+    );
+  }
+  if (role === 'DOCTOR') {
+    return (
+      <DoctorShell>
+        <AccountPage embedded />
+      </DoctorShell>
+    );
+  }
+  if (role === 'RESEARCHER') {
+    return (
+      <ResearchLayout>
+        <AccountPage embedded />
+      </ResearchLayout>
+    );
+  }
+  if (role === 'SYSTEM_ADMIN') {
+    return (
+      <AdminShell>
+        <AccountPage embedded />
+      </AdminShell>
+    );
+  }
+  return <AccountPage />;
+}
+
+export function App() {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <AppRoutes />
+      </AuthProvider>
+    </BrowserRouter>
+  );
+}
